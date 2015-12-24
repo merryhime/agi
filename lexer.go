@@ -3,7 +3,7 @@ package main
 import "io"
 import "unicode"
 import "fmt"
-import "bufio"
+import "math/big"
 
 type Lexer struct {
 	// character stream
@@ -292,6 +292,18 @@ func isoctaldigit(r rune) bool {
 func ishexdigit(r rune) bool {
 	return isdecimaldigit(r) || ('a' <= r && r <= 'f') || ('A' <= r && r <= 'F')
 }
+func hexdigitvalue(ch rune) rune {
+	switch {
+	case '0' <= ch && ch <= '9':
+		return ch - '0'
+	case 'a' <= ch && ch <= 'f':
+		return ch - 'a' + 10
+	case 'A' <= ch && ch <= 'F':
+		return ch - 'A' + 10
+	default:
+		panic("ICE")
+	}
+}
 
 // Reference: https://golang.org/ref/spec#Tokens
 func iswhitespace(r rune) bool {
@@ -316,6 +328,13 @@ func (l *Lexer) maybech(r rune) bool {
 	return false
 }
 
+func (l *Lexer) expectch(r rune, panicstr string) {
+	if l.ch != r {
+		panic(panicstr)
+	}
+	l.nextch()
+}
+
 func (l *Lexer) lexidentifierorkeyword() {
 	for isletter(l.ch) || isdigit(l.ch) {
 		l.nextch()
@@ -327,38 +346,201 @@ func (l *Lexer) lexidentifierorkeyword() {
 	}
 }
 
+/* Reference: https://golang.org/ref/spec#Integer_literals
+int_lit     = decimal_lit | octal_lit | hex_lit .
+decimal_lit = ( "1" … "9" ) { decimal_digit } .
+octal_lit   = "0" { octal_digit } .
+hex_lit     = "0" ( "x" | "X" ) hex_digit { hex_digit } .
+*/
 func (l *Lexer) lexnumerical(ch rune) {
 	switch ch {
 	case '0':
-		l.nextch()
+		if l.maybech('x') || l.maybech('X') {
+			// Hex
+			l.t.Type = HexIntegerLiteral
+			for ishexdigit(l.ch) {
+				l.nextch()
+			}
+		} else if l.maybech('b') || l.maybech('B') {
+			// Binary
+			l.t.Type = BinaryIntegerLiteral
+			for l.ch == '0' || l.ch == '1' {
+				l.nextch()
+			}
+		} else {
+			// Octal
+			l.t.Type = OctalIntegerLiteral
+			for isoctaldigit(l.ch) {
+				l.nextch()
+			}
+		}
+		value, success := (&big.Int{}).SetString(l.t.SourceCode, 0)
+		if value == nil || !success {
+			panic("ICE: Could not parse verified integer literal")
+		}
+		l.t.Payload = value
 	case '.':
-		l.nextch()
+		l.lexfloat(ch)
 	default:
-		l.nextch()
+		for isdecimaldigit(l.ch) {
+			l.nextch()
+		}
+		if l.maybech('.') {
+			l.lexfloat('.')
+		} else if l.maybech('e') || l.maybech('E') {
+			l.lexfloat('e')
+		} else {
+			// Decimal
+			l.t.Type = DecimalIntegerLiteral
+			value, success := (&big.Int{}).SetString(l.t.SourceCode, 0)
+			if value == nil || !success {
+				panic("ICE: Could not parse verified integer literal")
+			}
+			l.t.Payload = value
+		}
 	}
-	l.t.Type = DecimalIntegerLiteral
+}
+
+/* Reference: https://golang.org/ref/spec#Floating-point_literals
+float_lit = decimals "." [ decimals ] [ exponent ] |
+            decimals exponent |
+            "." decimals [ exponent ] .
+decimals  = decimal_digit { decimal_digit } .
+exponent  = ( "e" | "E" ) [ "+" | "-" ] decimals .
+*/
+func (l *Lexer) lexfloat(ch rune) {
+	switch ch {
+	case '.':
+		if l.t.SourceCode == "" && !isdecimaldigit(l.ch) {
+			panic("expecting at least one decimal digit")
+		}
+		for isdecimaldigit(l.ch) {
+			l.nextch()
+		}
+		if !l.maybech('e') || !l.maybech('E') {
+			break
+		}
+		fallthrough
+	case 'e':
+		if !l.maybech('-') {
+			l.maybech('+')
+		}
+		if !isdecimaldigit(l.ch) {
+			panic("expecting at least one decimal digit")
+		}
+		for isdecimaldigit(l.ch) {
+			l.nextch()
+		}
+	}
+	l.t.Type = FloatLiteral
+	value, success := (&big.Rat{}).SetString(l.t.SourceCode)
+	if value == nil || !success {
+		panic("ICE: Could not parse verified float literal")
+	}
+	l.t.Payload = value
+}
+
+/* Reference: https://golang.org/ref/spec#Rune_literals
+rune_lit         = "'" ( unicode_value | byte_value ) "'" .
+unicode_value    = unicode_char | little_u_value | big_u_value | escaped_char .
+byte_value       = octal_byte_value | hex_byte_value .
+octal_byte_value = `\` octal_digit octal_digit octal_digit .
+hex_byte_value   = `\` "x" hex_digit hex_digit .
+little_u_value   = `\` "u" hex_digit hex_digit hex_digit hex_digit .
+big_u_value      = `\` "U" hex_digit hex_digit hex_digit hex_digit
+                           hex_digit hex_digit hex_digit hex_digit .
+escaped_char     = `\` ( "a" | "b" | "f" | "n" | "r" | "t" | "v" | `\` | "'" | `"` ) .
+
+This func implements ( unicode_value | byte_value ).
+*/
+func (l *Lexer) lexsingletransch() rune {
+	hexdigits := func(n int) rune {
+		var value rune
+		for i := 0; i < n; i++ {
+			ch := l.ch
+			l.nextch()
+			if !ishexdigit(ch) {
+				panic("Too few hex digits")
+			}
+			value <<= 4
+			value |= hexdigitvalue(ch)
+		}
+		if value > 0x10FFFF || value < 0 {
+			panic("invalid unicode value")
+		} else if 0xD800 <= value && value <= 0xDFFF {
+			panic("illegal: surrogate halves are not allowed")
+		}
+		return value
+	}
+
+	ch := l.ch
+	l.nextch()
+	switch ch {
+	case '\\':
+		ch := l.ch
+		l.nextch()
+		switch ch {
+		case 'x':
+			return hexdigits(2)
+		case 'u':
+			return hexdigits(4)
+		case 'U':
+			return hexdigits(8)
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			ch2 := l.ch
+			l.nextch()
+			ch3 := l.ch
+			l.nextch()
+			if !isoctaldigit(ch2) || !isoctaldigit(ch3) {
+				panic("too few octal digits")
+			}
+			return (ch-'0')*64 + (ch2-'0')*8 + (ch3-'0')*1
+		case 'a':
+			return 0x0007
+		case 'b':
+			return 0x0008
+		case 'f':
+			return 0x000C
+		case 'n':
+			return 0x000A
+		case 'r':
+			return 0x000D
+		case 't':
+			return 0x0009
+		case 'v':
+			return 0x000B
+		case '\\':
+			return 0x005C
+		case '\'':
+			return 0x0027
+		case '"':
+			return 0x0022
+		}
+	case '\n':
+		panic("Newline in the middle of a string/rune constant")
+	default:
+		return ch
+	}
+
+	panic("ICE: Unreachable")
+}
+
+func (l *Lexer) lexchar() {
+	l.t.Type = RuneLiteral
+	var value rune = l.lexsingletransch()
+	l.expectch('\'', "Expected '; only single character rune literals are allowed")
+	l.t.Payload = value
 }
 
 func (l *Lexer) lextranslatedstr() {
 	l.t.Type = InterpretedStringLiteral
+	var value string
 	for l.ch != '"' {
-		if l.ch == '\\' {
-			l.nextch()
-		}
-		l.nextch()
+		value += string(l.lexsingletransch())
 	}
 	l.nextch()
 }
-func (l *Lexer) lexchar() {
-	l.t.Type = RuneLiteral
-	for l.ch != '\'' {
-		if l.ch == '\\' {
-			l.nextch()
-		}
-		l.nextch()
-	}
-	l.nextch()
-}
+
 func (l *Lexer) lexrawstr() {
 	l.t.Type = RawStringLiteral
 	for l.ch != '`' {
@@ -366,6 +548,7 @@ func (l *Lexer) lexrawstr() {
 	}
 	l.nextch()
 }
+
 func (l *Lexer) lexcomment() {
 	if l.ch == '/' {
 		l.t.Type = LineComment
@@ -374,10 +557,14 @@ func (l *Lexer) lexcomment() {
 		}
 		// !! Do not consume newline
 	} else {
+		hasNewline := false
 		l.t.Type = BlockComment
 		l.nextch()
 		for {
 			for l.ch != '*' {
+				if l.ch == '\n' {
+					hasNewline = true
+				}
 				l.nextch()
 			}
 			l.nextch()
@@ -385,6 +572,10 @@ func (l *Lexer) lexcomment() {
 				break
 			}
 		}
-		l.nextch()
+		if hasNewline {
+			l.ch = '\n'
+		} else {
+			l.nextch()
+		}
 	}
 }

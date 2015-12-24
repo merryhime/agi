@@ -1,9 +1,11 @@
 package main
 
 import "os"
+import "bufio"
+import "fmt"
 
 func main() {
-	f, err := os.Open("./main.go")
+	f, err := os.Open("./lexer.go")
 	if err != nil {
 		panic("Couldn't open main.go")
 	}

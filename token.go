@@ -118,7 +118,7 @@ const (
 	ShlAssignOp      // <<=
 	ShrAssignOp      // >>=
 	BitClearAssignOp // &^=
-	assignOpMax
+	assignopMax
 
 	LogicNotOp // !
 	LogicAndOp // &&
@@ -162,6 +162,7 @@ const (
 	DecimalIntegerLiteral
 	OctalIntegerLiteral
 	HexIntegerLiteral
+	BinaryIntegerLiteral
 
 	FloatLiteral
 
@@ -285,6 +286,7 @@ var tokenToStringMap = map[TokenType]string{
 	DecimalIntegerLiteral:    "DecimalIntegerLiteral",
 	OctalIntegerLiteral:      "OctalIntegerLiteral",
 	HexIntegerLiteral:        "HexIntegerLiteral",
+	BinaryIntegerLiteral:     "BinaryIntegerLiteral",
 	FloatLiteral:             "FloatLiteral",
 	ImaginaryLiteral:         "ImaginaryLiteral",
 	RuneLiteral:              "RuneLiteral",
