@@ -1,4 +1,4 @@
-package main
+package lexer
 
 type Token struct {
 	Position   Position
@@ -11,6 +11,10 @@ type Position struct {
 	Filename string
 	Line     int
 	Column   int
+}
+
+func (p Position) Move(cols int) Position {
+	return Position{p.Filename, p.Line, p.Column + cols}
 }
 
 type TokenType int

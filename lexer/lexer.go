@@ -1,4 +1,4 @@
-package main
+package lexer
 
 import "io"
 import "unicode"
@@ -196,7 +196,7 @@ func (l *Lexer) NextToken() Token {
 		switch {
 		case isletter(ch):
 			l.lexidentifierorkeyword()
-		case isdigit(ch):
+		case ishexdigit(ch):
 			l.lexnumerical(ch)
 		default:
 			fmt.Printf("%x %c\n", ch, ch)
@@ -206,7 +206,7 @@ func (l *Lexer) NextToken() Token {
 
 	switch l.t.Type {
 	case Identifier,
-		HexIntegerLiteral, OctalIntegerLiteral, DecimalIntegerLiteral,
+		HexIntegerLiteral, OctalIntegerLiteral, DecimalIntegerLiteral, BinaryIntegerLiteral,
 		FloatLiteral,
 		ImaginaryLiteral,
 		RuneLiteral,
@@ -242,7 +242,11 @@ func (l *Lexer) nextch() {
 		ret <<= 6
 		b = l.nextbyte()
 		if b&0xC0 != 0x80 {
-			panic("Invalid UTF-8")
+			if b == 0 {
+				println("Unexpected EOF while in the middle of a UTF-8 codepoint")
+			} else {
+				panic("Invalid UTF-8")
+			}
 		}
 		ret |= rune(b & 0x3F)
 	}
@@ -343,6 +347,7 @@ func (l *Lexer) lexidentifierorkeyword() {
 		l.t.Type = keywordMap[l.t.SourceCode]
 	} else {
 		l.t.Type = Identifier
+		l.t.Payload = l.t.SourceCode
 	}
 }
 
@@ -417,7 +422,7 @@ func (l *Lexer) lexfloat(ch rune) {
 		for isdecimaldigit(l.ch) {
 			l.nextch()
 		}
-		if !l.maybech('e') || !l.maybech('E') {
+		if !l.maybech('e') && !l.maybech('E') {
 			break
 		}
 		fallthrough
@@ -539,14 +544,18 @@ func (l *Lexer) lextranslatedstr() {
 		value += string(l.lexsingletransch())
 	}
 	l.nextch()
+	l.t.Payload = value
 }
 
 func (l *Lexer) lexrawstr() {
 	l.t.Type = RawStringLiteral
+	var value string
 	for l.ch != '`' {
+		value += string(l.ch)
 		l.nextch()
 	}
 	l.nextch()
+	l.t.Payload = value
 }
 
 func (l *Lexer) lexcomment() {

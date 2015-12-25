@@ -22,3 +22,9 @@ _testmain.go
 *.exe
 *.test
 *.prof
+
+# OS X specific
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
